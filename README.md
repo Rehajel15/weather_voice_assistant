@@ -1,0 +1,1 @@
+Dieses Projekt ist das erste Projekt von dem Minihackathon von Kevin Chromik. Es ist ein Sprachassistent, dem man seine Stadt nennen muss und mithilfe von Text-To-Speech eine Antwort enthält, die das Wetter der Stadt beinhaltet.
