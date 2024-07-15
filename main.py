@@ -3,6 +3,7 @@ import openmeteo_requests
 import requests_cache
 import pandas as pd
 from retry_requests import retry
+from geopy.geocoders import Nominatim
 
 import speech_recognition as sr
 import pyttsx3
@@ -14,7 +15,15 @@ engine = pyttsx3.init('sapi5')
 voices = engine.getProperty('voices')
 engine.setProperty('voice', voices[0].id)
 
+geolocator = Nominatim(user_agent="my_geocoder")
+
 r = sr.Recognizer()
+
+cache_session = requests_cache.CachedSession('.cache', expire_after = 3600)
+retry_session = retry(cache_session, retries = 5, backoff_factor = 0.2)
+openmeteo = openmeteo_requests.Client(session = retry_session)
+
+url = "https://api.open-meteo.com/v1/forecast"
 
 number_words = {
     "eins": 1,
@@ -88,7 +97,7 @@ def getWeatherVariable():
         fail = False
         return 'hours'
     
-    elif 'täglich' in query:
+    elif 'tagen' in query:
         fail = False
         return 'days'
     
@@ -107,9 +116,12 @@ def getForecastDays():
         speak("Bitte sagen Sie mir für wie viele Tage Sie die Wettervorhersage haben möchten. Bitte nennen Sie eine Zahl zwischen 1 und 16")
     query = takeCommand().lower()
 
-    number = number_words.get(query, None)
+    if query.isalpha():
+        number = number_words.get(query, 0)
+    else:
+        number = int(query)
 
-    if number <= 16 or number >= 1:
+    if number <= 16 and number >= 1:
         fail = False
         return number
     else:
@@ -117,6 +129,21 @@ def getForecastDays():
         speak("Leider habe ich Sie nicht verstanden. Versuchen sie es erneut")
         getForecastDays()
 
+def getCity():
+    global fail
+    if not fail:
+        speak("Bitte nennen Sie mir nun die Stadt, für die Sie die Wetterdaten haben möchten.")
+    query = takeCommand().lower()
+
+    location = geolocator.geocode(query)
+
+    if location:
+        fail = False
+        return location
+    else:
+       fail = True
+       speak("Ich habe Sie nicht verstanden oder konnte keine Stadt mit dem Namen finden. Bitte versuchen Sie es erneut.")
+       getCity()
 
 if __name__ == '__main__':
     clear = lambda: os.system('cls')
@@ -124,64 +151,50 @@ if __name__ == '__main__':
     greeting()
     weatherVariable = getWeatherVariable()
 
-    if weatherVariable == 'days' or weatherVariable == 'hours':
+    if weatherVariable in ('days','hours'):
         forecastDays = getForecastDays()
-        speak("Weiter geht's")
-    else:
-        speak("Weiter geht's")
 
+    city = getCity()
+    
+    latitude = city.latitude
+    longitude = city.longitude
+    
+    if weatherVariable == 'current':
+        params = {
+            "latitude": latitude,
+            "longitude": longitude,
+            "timeformat": "unixtime",
+            "current": ["temperature_2m", "relative_humidity_2m", "apparent_temperature", "is_day", "precipitation", "rain", "showers", "snowfall", "weather_code", "wind_speed_10m", "wind_direction_10m"],
+            "timezone": "Europe/Berlin",
+        }
 
+        responses = openmeteo.weather_api(url, params=params)
+        response = responses[0]
 
+        current = response.Current()
+        current_temperature_2m = current.Variables(0).Value()
+        current_relative_humidity_2m = current.Variables(1).Value()
+        current_apparent_temperature = current.Variables(2).Value()
+        current_is_day = current.Variables(3).Value()
+        current_weather_code = current.Variables(4).Value()
+        current_wind_speed_10m = current.Variables(5).Value()
+        current_wind_direction_10m = current.Variables(6).Value()
 
-# Setup the Open-Meteo API client with cache and retry on error
-cache_session = requests_cache.CachedSession('.cache', expire_after = 3600)
-retry_session = retry(cache_session, retries = 5, backoff_factor = 0.2)
-openmeteo = openmeteo_requests.Client(session = retry_session)
+        if current_is_day > 0:
+            speak(f"In {city} ist es gerade Tag und die Temperatur beträgt momentan {current_temperature_2m} C° bei einer relativen Luftfeuchtigkeit von {current_relative_humidity_2m}%")
+            
+        
+        
+       
+        print(f"Current weather_code {current_weather_code}")
+        print(f"Current wind_speed_10m {current_wind_speed_10m}")
+        print(f"Current wind_direction_10m {current_wind_direction_10m}")
 
-# Make sure all required weather variables are listed here
-# The order of variables in hourly or daily is important to assign them correctly below
-url = "https://api.open-meteo.com/v1/forecast"
-params = {
-	"latitude": 51.5623,
-	"longitude": 6.7434,
-	"hourly": ["temperature_2m", "relative_humidity_2m", "apparent_temperature", "rain", "visibility", "wind_speed_80m", "temperature_80m", "soil_temperature_18cm"],
-	"timezone": "Europe/Berlin",
-	"forecast_days": 1
-}
-responses = openmeteo.weather_api(url, params=params)
-
-# Process first location. Add a for-loop for multiple locations or weather models
-response = responses[0]
-print(f"Coordinates {response.Latitude()}°N {response.Longitude()}°E")
-print(f"Elevation {response.Elevation()} m asl")
-print(f"Timezone {response.Timezone()} {response.TimezoneAbbreviation()}")
-print(f"Timezone difference to GMT+0 {response.UtcOffsetSeconds()} s")
-
-# Process hourly data. The order of variables needs to be the same as requested.
-hourly = response.Hourly()
-hourly_temperature_2m = hourly.Variables(0).ValuesAsNumpy()
-hourly_relative_humidity_2m = hourly.Variables(1).ValuesAsNumpy()
-hourly_apparent_temperature = hourly.Variables(2).ValuesAsNumpy()
-hourly_rain = hourly.Variables(3).ValuesAsNumpy()
-hourly_visibility = hourly.Variables(4).ValuesAsNumpy()
-hourly_wind_speed_80m = hourly.Variables(5).ValuesAsNumpy()
-hourly_temperature_80m = hourly.Variables(6).ValuesAsNumpy()
-hourly_soil_temperature_18cm = hourly.Variables(7).ValuesAsNumpy()
-
-hourly_data = {"date": pd.date_range(
-	start = pd.to_datetime(hourly.Time(), unit = "s", utc = True),
-	end = pd.to_datetime(hourly.TimeEnd(), unit = "s", utc = True),
-	freq = pd.Timedelta(seconds = hourly.Interval()),
-	inclusive = "left"
-)}
-hourly_data["temperature_2m"] = hourly_temperature_2m
-hourly_data["relative_humidity_2m"] = hourly_relative_humidity_2m
-hourly_data["apparent_temperature"] = hourly_apparent_temperature
-hourly_data["rain"] = hourly_rain
-hourly_data["visibility"] = hourly_visibility
-hourly_data["wind_speed_80m"] = hourly_wind_speed_80m
-hourly_data["temperature_80m"] = hourly_temperature_80m
-hourly_data["soil_temperature_18cm"] = hourly_soil_temperature_18cm
-
-hourly_dataframe = pd.DataFrame(data = hourly_data)
-print(hourly_dataframe)
+    #elif weatherVariable == 'days':
+      #  params = {
+       #     "latitude": latitude,
+       #     "longitude": longitude,
+        #    "daily": ["weather_code", "temperature_2m_max", "temperature_2m_min", "apparent_temperature_max", "apparent_temperature_min", "sunrise", "sunset", "daylight_duration", "sunshine_duration", "uv_index_max", "precipitation_probability_max"],
+        #   "timezone": "Europe/Berlin",
+          #  "forecast_days": forecastDays
+       # }
